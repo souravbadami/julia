@@ -181,45 +181,6 @@ function _wait(t::Task)
     fetch(t)
 end
 
-# runtime system hook called when a task finishes
-function task_done_hook(t::Task)
-    # `finish_task` sets `sigatomic` before entering this function
-    err = istaskfailed(t)
-    result = task_result(t)
-    handled = false
-    if err
-        t.backtrace = catch_backtrace()
-    end
-
-    # Execute any other hooks registered in the TLS
-    if isa(t.storage, IdDict) && haskey(t.storage, :TASKDONE_HOOKS)
-        foreach(hook -> hook(t), t.storage[:TASKDONE_HOOKS])
-        delete!(t.storage, :TASKDONE_HOOKS)
-        handled = true
-    end
-
-    if err && !handled
-        if isa(result,InterruptException) && isdefined(Base,:active_repl_backend) &&
-            active_repl_backend.backend_task.state == :runnable && isempty(Workqueue) &&
-            active_repl_backend.in_eval
-            throwto(active_repl_backend.backend_task, result) # this terminates the task
-        end
-        if !suppress_excp_printing(t)
-            let bt = t.backtrace
-                # run a new task to print the error for us (we should not yield here!)
-                dtsk = @task with_output_color(Base.error_color(), stderr) do io
-                    print(io, "ERROR (unhandled task failure): ")
-                    showerror(io, result, bt)
-                    println(io)
-                end
-                schedule(dtsk, unyielding=true)
-            end
-        end
-    end
-    # Clear sigatomic before waiting
-    sigatomic_end()
-end
-
 else # !JULIA_PARTR
 
 # NOTE: you can only wait for scheduled tasks
@@ -238,75 +199,8 @@ function _wait(t::Task)
     end
 end
 
-# runtime system hook called when a task finishes
-function task_done_hook(t::Task)
-    # `finish_task` sets `sigatomic` before entering this function
-    err = istaskfailed(t)
-    result = task_result(t)
-    handled = false
-    if err
-        t.backtrace = catch_backtrace()
-    end
-
-    if isa(t.donenotify, Condition) && !isempty(t.donenotify.waitq)
-        handled = true
-        notify(t.donenotify, result, true, err)
-    end
-
-    # Execute any other hooks registered in the TLS
-    if isa(t.storage, IdDict) && haskey(t.storage, :TASKDONE_HOOKS)
-        foreach(hook -> hook(t), t.storage[:TASKDONE_HOOKS])
-        delete!(t.storage, :TASKDONE_HOOKS)
-        handled = true
-    end
-
-    if err && !handled
-        if isa(result,InterruptException) && isdefined(Base,:active_repl_backend) &&
-            active_repl_backend.backend_task.state == :runnable && isempty(Workqueue) &&
-            active_repl_backend.in_eval
-            throwto(active_repl_backend.backend_task, result) # this terminates the task
-        end
-        if !suppress_excp_printing(t)
-            let bt = t.backtrace
-                # run a new task to print the error for us
-                @async with_output_color(Base.error_color(), stderr) do io
-                    print(io, "ERROR (unhandled task failure): ")
-                    showerror(io, result, bt)
-                    println(io)
-                end
-            end
-        end
-    end
-    # Clear sigatomic before waiting
-    sigatomic_end()
-    try
-        wait() # this will not return
-    catch e
-        # If an InterruptException happens while blocked in the event loop, try handing
-        # the exception to the REPL task since the current task is done.
-        # issue #19467
-        if isa(e,InterruptException) && isdefined(Base,:active_repl_backend) &&
-            active_repl_backend.backend_task.state == :runnable && isempty(Workqueue) &&
-            active_repl_backend.in_eval
-            throwto(active_repl_backend.backend_task, e)
-        else
-            rethrow(e)
-        end
-    end
-end
-
-"""
-    fetch(t::Task)
-
-Wait for a Task to finish, then return its result value. If the task fails with an
-exception, the exception is propagated (re-thrown in the task that called fetch).
-"""
-function fetch(t::Task)
-    _wait(t)
-    task_result(t)
-end
-
 end # JULIA_PARTR
+
 
 
 suppress_excp_printing(t::Task) = isa(t.storage, IdDict) ? get(get_task_tls(t), :SUPPRESS_EXCEPTION_PRINTING, false) : false
@@ -407,6 +301,119 @@ macro async(expr)
     thunk = esc(:(()->($expr)))
     :(async_run_thunk($thunk))
 end
+
+if JULIA_PARTR
+
+# runtime system hook called when a task finishes
+function task_done_hook(t::Task)
+    # `finish_task` sets `sigatomic` before entering this function
+    err = istaskfailed(t)
+    result = task_result(t)
+    handled = false
+    if err
+        t.backtrace = catch_backtrace()
+    end
+
+    # Execute any other hooks registered in the TLS
+    if isa(t.storage, IdDict) && haskey(t.storage, :TASKDONE_HOOKS)
+        foreach(hook -> hook(t), t.storage[:TASKDONE_HOOKS])
+        delete!(t.storage, :TASKDONE_HOOKS)
+        handled = true
+    end
+
+    if err && !handled
+        if isa(result,InterruptException) && isdefined(Base,:active_repl_backend) &&
+            active_repl_backend.backend_task.state == :runnable && isempty(Workqueue) &&
+            active_repl_backend.in_eval
+            throwto(active_repl_backend.backend_task, result) # this terminates the task
+        end
+        if !suppress_excp_printing(t)
+            let bt = t.backtrace
+                # run a new task to print the error for us (we should not yield here!)
+                dtsk = @task with_output_color(Base.error_color(), stderr) do io
+                    print(io, "ERROR (unhandled task failure): ")
+                    showerror(io, result, bt)
+                    println(io)
+                end
+                schedule(dtsk, unyielding=true)
+            end
+        end
+    end
+    # Clear sigatomic before waiting
+    sigatomic_end()
+end
+
+else # !JULIA_PARTR
+
+# runtime system hook called when a task finishes
+function task_done_hook(t::Task)
+    # `finish_task` sets `sigatomic` before entering this function
+    err = istaskfailed(t)
+    result = task_result(t)
+    handled = false
+    if err
+        t.backtrace = catch_backtrace()
+    end
+
+    if isa(t.donenotify, Condition) && !isempty(t.donenotify.waitq)
+        handled = true
+        notify(t.donenotify, result, true, err)
+    end
+
+    # Execute any other hooks registered in the TLS
+    if isa(t.storage, IdDict) && haskey(t.storage, :TASKDONE_HOOKS)
+        foreach(hook -> hook(t), t.storage[:TASKDONE_HOOKS])
+        delete!(t.storage, :TASKDONE_HOOKS)
+        handled = true
+    end
+
+    if err && !handled
+        if isa(result,InterruptException) && isdefined(Base,:active_repl_backend) &&
+            active_repl_backend.backend_task.state == :runnable && isempty(Workqueue) &&
+            active_repl_backend.in_eval
+            throwto(active_repl_backend.backend_task, result) # this terminates the task
+        end
+        if !suppress_excp_printing(t)
+            let bt = t.backtrace
+                # run a new task to print the error for us
+                @async with_output_color(Base.error_color(), stderr) do io
+                    print(io, "ERROR (unhandled task failure): ")
+                    showerror(io, result, bt)
+                    println(io)
+                end
+            end
+        end
+    end
+    # Clear sigatomic before waiting
+    sigatomic_end()
+    try
+        wait() # this will not return
+    catch e
+        # If an InterruptException happens while blocked in the event loop, try handing
+        # the exception to the REPL task since the current task is done.
+        # issue #19467
+        if isa(e,InterruptException) && isdefined(Base,:active_repl_backend) &&
+            active_repl_backend.backend_task.state == :runnable && isempty(Workqueue) &&
+            active_repl_backend.in_eval
+            throwto(active_repl_backend.backend_task, e)
+        else
+            rethrow(e)
+        end
+    end
+end
+
+"""
+    fetch(t::Task)
+
+Wait for a Task to finish, then return its result value. If the task fails with an
+exception, the exception is propagated (re-thrown in the task that called fetch).
+"""
+function fetch(t::Task)
+    _wait(t)
+    task_result(t)
+end
+
+end # !JULIA_PARTR
 
 
 """
