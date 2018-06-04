@@ -199,29 +199,23 @@ function _wait(t::Task)
     end
 end
 
+"""
+    fetch(t::Task)
+
+Wait for a Task to finish, then return its result value. If the task fails with an
+exception, the exception is propagated (re-thrown in the task that called fetch).
+"""
+function fetch(t::Task)
+    _wait(t)
+    task_result(t)
+end
+
 end # JULIA_PARTR
 
 
+## lexically-scoped waiting for multiple items
 
-suppress_excp_printing(t::Task) = isa(t.storage, IdDict) ? get(get_task_tls(t), :SUPPRESS_EXCEPTION_PRINTING, false) : false
-
-function register_taskdone_hook(t::Task, hook)
-    tls = get_task_tls(t)
-    push!(get!(tls, :TASKDONE_HOOKS, []), hook)
-    t
-end
-
-## dynamically-scoped waiting for multiple items
-sync_begin() = task_local_storage(:SPAWNS, ([], get(task_local_storage(), :SPAWNS, ())))
-
-function sync_end()
-    spawns = get(task_local_storage(), :SPAWNS, ())
-    if spawns === ()
-        error("sync_end() without sync_begin()")
-    end
-    refs = spawns[1]
-    task_local_storage(:SPAWNS, spawns[2])
-
+function sync_end(refs)
     c_ex = CompositeException()
     for r in refs
         try
@@ -243,6 +237,8 @@ function sync_end()
     nothing
 end
 
+const sync_varname = gensym(:sync)
+
 """
     @sync
 
@@ -251,55 +247,40 @@ are complete. All exceptions thrown by enclosed async operations are collected a
 a `CompositeException`.
 """
 macro sync(block)
+    var = esc(sync_varname)
     quote
-        sync_begin()
-        v = $(esc(block))
-        sync_end()
-        v
-    end
-end
-
-function sync_add(r)
-    spawns = get(task_local_storage(), :SPAWNS, ())
-    if spawns !== ()
-        push!(spawns[1], r)
-        if isa(r, Task)
-            tls_r = get_task_tls(r)
-            tls_r[:SUPPRESS_EXCEPTION_PRINTING] = true
+        let $var = Any[]
+            v = $(esc(block))
+            sync_end($var)
+            v
         end
     end
-    r
 end
-
-if JULIA_PARTR
-
-function async_run_thunk(thunk)
-    t = Task(thunk)
-    sync_add(t)
-    schedule(t)
-end
-
-else # !JULIA_PARTR
-
-function async_run_thunk(thunk)
-    t = Task(thunk)
-    sync_add(t)
-    enq_work(t)
-    t
-end
-
-end # JULIA_PARTR
 
 """
     @async
 
-Like `@schedule`, `@async` wraps an expression in a `Task` and adds it to the local
-machine's scheduler queue. Additionally it adds the task to the set of items that the
-nearest enclosing `@sync` waits for.
+Wrap an expression in a [`Task`](@ref) and add it to the local machine's scheduler queue.
 """
 macro async(expr)
     thunk = esc(:(()->($expr)))
-    :(async_run_thunk($thunk))
+    var = esc(sync_varname)
+    quote
+        local task = Task($thunk)
+        if $(Expr(:isdefined, var))
+            push!($var, task)
+            get_task_tls(task)[:SUPPRESS_EXCEPTION_PRINTING] = true
+        end
+        schedule(task)
+    end
+end
+
+suppress_excp_printing(t::Task) = isa(t.storage, IdDict) ? get(get_task_tls(t), :SUPPRESS_EXCEPTION_PRINTING, false) : false
+
+function register_taskdone_hook(t::Task, hook)
+    tls = get_task_tls(t)
+    push!(get!(tls, :TASKDONE_HOOKS, []), hook)
+    t
 end
 
 if JULIA_PARTR
@@ -400,17 +381,6 @@ function task_done_hook(t::Task)
             rethrow(e)
         end
     end
-end
-
-"""
-    fetch(t::Task)
-
-Wait for a Task to finish, then return its result value. If the task fails with an
-exception, the exception is propagated (re-thrown in the task that called fetch).
-"""
-function fetch(t::Task)
-    _wait(t)
-    task_result(t)
 end
 
 end # !JULIA_PARTR
