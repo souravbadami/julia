@@ -1610,3 +1610,16 @@ for i27351 in 1:15
 end
 f27351(::T, ::T27351, ::T27351) where {T} = 16
 @test_throws MethodError f27351(Val(1), T27351(), T27351())
+
+# PR 27434, inference when splatting iterators with type-based state
+splat27434(x) = (x...,)
+struct Iterator27434
+    x::Int
+    y::Int
+    z::Int
+end
+Base.iterate(i::Iterator27434) = i.x, Val(1)
+Base.iterate(i::Iterator27434, ::Val{1}) = i.y, Val(2)
+Base.iterate(i::Iterator27434, ::Val{2}) = i.z, Val(3)
+Base.iterate(::Iterator27434, ::Any) = nothing
+@test @inferred splat27434(Iterator27434(1, 2, 3)) == (1, 2, 3)
