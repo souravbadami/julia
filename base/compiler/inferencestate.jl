@@ -80,7 +80,7 @@ function InferenceState(result::InferenceResult, src::CodeInfo,
       end
       s_types[1] = s_argtypes
     else
-      s_types = map(_ -> [], s_types)
+      s_types = Any[[] for _ in s_types]
     end
 
     ssavalue_uses = find_ssavalue_uses(code, nssavalues)
