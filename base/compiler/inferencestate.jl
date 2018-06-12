@@ -70,13 +70,18 @@ function InferenceState(result::InferenceResult, src::CodeInfo,
     argtypes = get_argtypes(result)
     nargs = length(argtypes)
     s_argtypes = VarTable(undef, nslots)
-    src.slottypes = Vector{Any}(undef, nslots)
-    for i in 1:nslots
-        at = (i > nargs) ? Bottom : argtypes[i]
-        s_argtypes[i] = VarState(at, i > nargs)
-        src.slottypes[i] = at
+
+    if !src.inferred
+      src.slottypes = Vector{Any}(undef, nslots)
+      for i in 1:nslots
+          at = (i > nargs) ? Bottom : argtypes[i]
+          s_argtypes[i] = VarState(at, i > nargs)
+          src.slottypes[i] = at
+      end
+      s_types[1] = s_argtypes
+    else
+      s_types = map(_ -> [], s_types)
     end
-    s_types[1] = s_argtypes
 
     ssavalue_uses = find_ssavalue_uses(code, nssavalues)
 
