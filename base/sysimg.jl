@@ -518,7 +518,6 @@ let
             :OldPkg,
             :LinearAlgebra,
             :SparseArrays,
-            :SuiteSparse,
             :SharedArrays,
             :Distributed,
             :Pkg,
