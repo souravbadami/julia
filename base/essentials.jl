@@ -222,7 +222,6 @@ tuple_convert_check(T, x) = isvatuple(T) || nfields(x) === fieldcount(T) || thro
 
 function convert(::Type{T}, x::NTuple{N,Any}) where {T<:Tuple,N}
     tuple_convert_check(T, x)
-    # TODO: this is inferring Unions for concrete converts
     return ntuple(i -> convert(fieldtype(T, i), x[i]), Val(N))
 end
 
