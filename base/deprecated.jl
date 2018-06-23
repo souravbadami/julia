@@ -1723,6 +1723,8 @@ end
 @deprecate_moved eigs "Arpack"
 @deprecate_moved svds "Arpack"
 
+@deprecate_moved spdiagm "SparseArrays"
+
 # END 0.7 deprecations
 
 # BEGIN 1.0 deprecations
